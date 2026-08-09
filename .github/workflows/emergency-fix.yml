@@ -1,0 +1,38 @@
+name: Emergency Fix - Rename Import Module
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Rename folder
+      run: |
+        if [ -d "feature/import" ]; then
+          mv feature/import feature/importer
+          echo "✅ Folder renamed"
+        else
+          echo "Folder not found"
+        fi
+    
+    - name: Fix settings.gradle.kts
+      run: |
+        sed -i 's/:feature:import/:feature:importer/g' settings.gradle.kts
+    
+    - name: Fix app/build.gradle.kts
+      run: |
+        sed -i 's/:feature:import/:feature:importer/g' app/build.gradle.kts
+    
+    - name: Commit
+      run: |
+        git config user.name "GitHub Actions"
+        git config user.email "actions@github.com"
+        git add -A
+        git commit -m "Fix: Rename import to importer" || echo "No changes"
+        git push
