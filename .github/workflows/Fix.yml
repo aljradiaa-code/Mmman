@@ -1,0 +1,171 @@
+name: Auto-fix import namespace and Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  auto-fix-and-build:
+    runs-on: ubuntu-latest
+    env:
+      OLD_PACKAGE: "com.autoparts.inventory.feature.import"
+      NEW_PACKAGE: "com.autoparts.inventory.feature.imports"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Detect & apply package rename (safe)
+        id: apply_fix
+        run: |
+          set -euo pipefail
+          echo "OLD_PACKAGE=$OLD_PACKAGE"
+          echo "NEW_PACKAGE=$NEW_PACKAGE"
+
+          # Find any occurrences of the old package
+          echo "Searching for references to the old package..."
+          occurrences=$(git grep -n --full-name "$OLD_PACKAGE" || true)
+
+          if [ -z "$occurrences" ]; then
+            echo "No occurrences of $OLD_PACKAGE found. Nothing to change."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Occurrences found:"
+          echo "$occurrences"
+
+          # Create a branch for fixes
+          BRANCH="fix/rename-import-namespace-$(date +%s)"
+          git checkout -b "$BRANCH"
+
+          # Replace text occurrences in files (build files, manifests, kotlin/java sources, xml, etc.)
+          echo "Replacing textual occurrences..."
+          files=$(git grep -l "$OLD_PACKAGE" || true)
+          if [ -n "$files" ]; then
+            # iterate safely over files (newline separated)
+            printf '%s\n' "$files" | while IFS= read -r f; do
+              echo "Processing file: $f"
+              sed -i "s|$OLD_PACKAGE|$NEW_PACKAGE|g" "$f" || true
+            done
+          fi
+
+          # Rename directories named .../com/.../feature/import -> .../imports
+          echo "Searching for package directories to rename..."
+          # adjust the path pattern if your package folder structure differs
+          find . -type d -path "*/com/autoparts/inventory/feature/import" -print0 | while IFS= read -r -d '' dir; do
+            echo "Found dir: $dir"
+            parent=$(dirname "$dir")
+            newdir="$parent/imports"
+            if [ -d "$newdir" ]; then
+              echo "Target directory already exists: $newdir — moving files into it"
+              git ls-files -z "$dir" | xargs -0 -I{} git mv -f "{}" "$newdir/" || true
+              git rm -r --cached --ignore-unmatch "$dir" || true
+            else
+              echo "Renaming directory via git mv: $dir -> $newdir"
+              git mv "$dir" "$newdir" || {
+                echo "git mv failed; attempting fallback move"
+                mkdir -p "$newdir"
+                git ls-files -z "$dir" | xargs -0 -I{} git mv -f "{}" "$newdir/" || true
+                git rm -r --cached --ignore-unmatch "$dir" || true
+              }
+            fi
+          done
+
+          # Also consider kotlin source directories under 'kotlin' root if present
+          find . -type d -path "*/kotlin/com/autoparts/inventory/feature/import" -print0 | while IFS= read -r -d '' dir; do
+            echo "Found kotlin dir: $dir"
+            parent=$(dirname "$dir")
+            newdir="$parent/imports"
+            git mv "$dir" "$newdir" || true
+          done
+
+          # Update AndroidManifest package attributes (if any)
+          echo "Updating AndroidManifest package attributes if present..."
+          manifest_files=$(git grep -l "package=\"$OLD_PACKAGE\"" || true)
+          if [ -n "$manifest_files" ]; then
+            printf '%s\n' "$manifest_files" | while IFS= read -r mf; do
+              echo "Updating manifest: $mf"
+              sed -i "s|package=\"$OLD_PACKAGE\"|package=\"$NEW_PACKAGE\"|g" "$mf" || true
+            done
+          fi
+
+          # Stage and commit changes (if any)
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit after replacements."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            # switch back to previous branch to avoid leaving runner on the new branch
+            git checkout - || true
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "ci(fix): rename invalid package '$OLD_PACKAGE' → '$NEW_PACKAGE' (import is Java keyword)"
+          echo "Committed changes on branch $BRANCH"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Build (after fix)
+        if: steps.apply_fix.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          echo "Building to verify the fix..."
+          ./gradlew clean assembleDebug --stacktrace --no-daemon
+
+      - name: Push branch & Open PR
+        if: steps.apply_fix.outputs.changed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          BRANCH=$(jq -r '.branch' <<< "${{ steps.apply_fix.outputs }}" 2>/dev/null || true)
+          # Fallback: derive branch from git if step output not present
+          if [ -z "$BRANCH" ] || [ "$BRANCH" = "null" ]; then
+            BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          fi
+          echo "Pushing branch: $BRANCH"
+          git push --set-upstream origin "$BRANCH"
+
+          PR_TITLE="Fix: rename invalid package 'import' → 'imports'"
+          PR_BODY="Automated rename of invalid Java package segment 'import' to 'imports' to avoid the Java keyword. CI build verified the change."
+
+          echo "Creating PR via GitHub API..."
+          RESPONSE=$(curl -s -X POST \
+            -H "Authorization: token ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls" \
+            -d "$(jq -n --arg t "$PR_TITLE" --arg h "$BRANCH" --arg b "$PR_BODY" --arg base "main" '{title:$t, head:$h, base:$base, body:$b}')" )
+          echo "PR response: $RESPONSE"
+
+      - name: Build anyway (no changes)
+        if: steps.apply_fix.outputs.changed == 'false'
+        run: |
+          set -euo pipefail
+          echo "No package changes required; running normal build to ensure repository is buildable."
+          ./gradlew clean assembleDebug --stacktrace --no-daemon
+
+      - name: Upload Debug APK
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: ignore
