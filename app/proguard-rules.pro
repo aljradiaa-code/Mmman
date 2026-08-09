@@ -1,0 +1,2 @@
+-keep class com.autoparts.inventory.core.database.entity.** { *; }
+-keep class com.autoparts.inventory.core.domain.model.** { *; }
