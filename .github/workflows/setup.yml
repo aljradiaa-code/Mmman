@@ -1,0 +1,34 @@
+name: Setup Project
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Run setup script
+      run: |
+        chmod +x setup.sh
+        ./setup.sh
+    
+    - name: Move files to root
+      run: |
+        shopt -s dotglob
+        mv auto-parts-inventory/* . 2>/dev/null || true
+        mv auto-parts-inventory/.* . 2>/dev/null || true
+        rmdir auto-parts-inventory 2>/dev/null || true
+    
+    - name: Commit generated files
+      run: |
+        git config user.name "GitHub Actions"
+        git config user.email "actions@github.com"
+        git add .
+        git commit -m "Auto-generate project structure" || echo "No changes"
+        git push
