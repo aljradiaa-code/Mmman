@@ -1,0 +1,67 @@
+name: Fix Java Keyword Issue
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Rename 'import' to 'importer'
+      run: |
+        echo "🔄 Renaming feature/import to feature/importer..."
+        if [ -d "feature/import" ]; then
+          mv feature/import feature/importer
+          echo "✅ Directory renamed successfully"
+        else
+          echo "ℹ️ Directory already renamed or not found"
+        fi
+    
+    - name: Update settings.gradle.kts
+      run: |
+        sed -i 's/:feature:import/:feature:importer/g' settings.gradle.kts
+        echo "✅ Updated settings.gradle.kts"
+    
+    - name: Update app/build.gradle.kts
+      run: |
+        sed -i 's/:feature:import/:feature:importer/g' app/build.gradle.kts
+        echo "✅ Updated app/build.gradle.kts"
+    
+    - name: Update feature/importer/build.gradle.kts
+      run: |
+        if [ -f "feature/importer/build.gradle.kts" ]; then
+          sed -i 's/com\.autoparts\.inventory\.feature\.import/com.autoparts.inventory.feature.importer/g' feature/importer/build.gradle.kts
+          echo "✅ Updated feature/importer/build.gradle.kts"
+        fi
+    
+    - name: Update Kotlin package names
+      run: |
+        if [ -d "feature/importer" ]; then
+          find feature/importer -name "*.kt" -exec sed -i 's/package com\.autoparts\.inventory\.feature\.import\b/package com.autoparts.inventory.feature.importer/g' {} \;
+          find feature/importer -name "*.kt" -exec sed -i 's/com\.autoparts\.inventory\.feature\.import\b/com.autoparts.inventory.feature.importer/g' {} \;
+          echo "✅ Updated Kotlin package declarations"
+        fi
+    
+    - name: Verify changes
+      run: |
+        echo "📋 Verifying changes..."
+        grep -r "feature:importer" settings.gradle.kts || echo "❌ settings.gradle.kts not updated"
+        grep -r "feature:importer" app/build.gradle.kts || echo "❌ app/build.gradle.kts not updated"
+        ls -la feature/ | grep importer || echo "❹ importer directory not found"
+    
+    - name: Commit and push fixes
+      run: |
+        git config user.name "GitHub Actions"
+        git config user.email "actions@github.com"
+        
+        git add -A
+        git commit -m "fix: rename 'import' module to 'importer' to avoid Java keyword conflict" || echo "No changes to commit"
+        git push
+        echo "✅ Fixes pushed to repository!"
